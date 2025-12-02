@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PDF Carousel — Visualizador</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#06b6d4}
+    body{font-family:Inter,system-ui,Segoe UI,Arial;background:linear-gradient(180deg,#071223 0%, #071a2a 100%);color:#e6eef6;margin:0;padding:20px;}
+    .app{max-width:1100px;margin:0 auto}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:18px}
+    h1{font-size:1.125rem;margin:0}
+    .controls{display:flex;gap:8px;align-items:center}
+    input[type=text]{padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    label.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;background:var(--card);border-radius:10px;border:1px solid rgba(255,255,255,0.04);cursor:pointer}
+    label.btn input{display:none}
+    .viewer{background:rgba(255,255,255,0.02);border-radius:12px;padding:14px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+    .carousel-wrap{position:relative;overflow:hidden}
+    .slides{display:flex;gap:12px;transition:transform .32s ease;touch-action:pan-y}
+    .slide{min-width:100%;flex:0 0 100%;display:flex;align-items:center;justify-content:center}
+    canvas{max-width:100%;height:auto;border-radius:6px;box-shadow:0 8px 20px rgba(2,6,23,0.6)}
+    .nav{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:12px}
+    .nav button{padding:8px 12px;border-radius:8px;border:0;background:var(--accent);color:#042028;cursor:pointer}
+    .thumbs{display:flex;gap:8px;overflow:auto;padding:10px 4px;margin-top:12px}
+    .thumb{width:90px;height:120px;flex:0 0 auto;border-radius:6px;overflow:hidden;display:inline-block;border:2px solid transparent;cursor:pointer}
+    .thumb canvas{width:100%;height:100%;object-fit:cover}
+    .thumb.active{border-color:var(--accent)}
+    .meta{color:var(--muted);font-size:0.92rem}
+    @media(min-width:900px){
+      .slide{min-width:800px;flex:0 0 800px}
+      .thumb{width:120px;height:160px}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>PDF Carousel — Visualizador</h1>
+      <div class="controls">
+        <label class="btn">Escolher arquivo
+          <input id="file" type="file" accept="application/pdf">
+        </label>
+        <input id="url" type="text" placeholder="Ou cole URL do PDF e pressione Enter" />
+        
+      </div>     
+    </header>
+    
+    <p><span class="meta" id="status">Nenhum PDF carregado</span></p>
+
+    <main class="viewer">
+      <div class="carousel-wrap">
+        <div id="slides" class="slides"></div>
+      </div>
+
+      <div class="nav">
+        <button id="prev"> Anterior</button>
+        <div class="meta" id="page-info">—</div>
+        <button id="next">Próximo </button>
+      </div>
+
+      <div class="thumbs" id="thumbs" aria-label="Miniaturas"></div>
+    </main>
+  </div>
+
+  <!-- PDF.js (CDN) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script>
+    // Configuração do worker (ajuste se usar outra CDN)
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    }
+
+    const fileInput = document.getElementById('file');
+    const urlInput = document.getElementById('url');
+    const status = document.getElementById('status');
+    const slides = document.getElementById('slides');
+    const thumbs = document.getElementById('thumbs');
+    const prevBtn = document.getElementById('prev');
+    const nextBtn = document.getElementById('next');
+    const pageInfo = document.getElementById('page-info');
+
+    let pdfDoc = null;
+    let currentPage = 1;
+    let slideWidth = null;
+
+    function setStatus(t){ status.textContent = t; }
+
+    async function loadPDFFromUrl(url){
+      try{
+        setStatus('Carregando PDF...');
+        const loadingTask = pdfjsLib.getDocument(url);
+        pdfDoc = await loadingTask.promise;
+        setStatus(`PDF carregado — ${pdfDoc.numPages} páginas`);
+        renderAll();
+      }catch(e){ console.error(e); setStatus('Erro ao carregar PDF: '+e.message); }
+    }
+
+    function loadPDFFromFile(file){
+      const reader = new FileReader();
+      reader.onload = function(){
+        const typed = new Uint8Array(this.result);
+        const loadingTask = pdfjsLib.getDocument({data:typed});
+        setStatus('Carregando PDF...');
+        loadingTask.promise.then(doc=>{ pdfDoc = doc; setStatus(`PDF carregado — ${pdfDoc.numPages} páginas`); renderAll(); }).catch(err=>{ setStatus('Erro: '+err.message); });
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    async function renderPageToCanvas(pageNum, scale=1.2){
+      const page = await pdfDoc.getPage(pageNum);
+      const viewport = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      await page.render({canvasContext:context,viewport}).promise;
+      return canvas;
+    }
+
+    async function renderAll(){
+      slides.innerHTML = '';
+      thumbs.innerHTML = '';
+      const total = pdfDoc.numPages;
+      currentPage = 1;
+      pageInfo.textContent = `Página ${currentPage} / ${total}`;
+
+      for(let p=1;p<=total;p++){
+        // Slide (larger canvas)
+        const slide = document.createElement('div');
+        slide.className = 'slide';
+        const canvasLarge = await renderPageToCanvas(p,1.4);
+        slide.appendChild(canvasLarge);
+        slides.appendChild(slide);
+
+        // Thumb (smaller canvas)
+        const thumbWrap = document.createElement('div');
+        thumbWrap.className = 'thumb';
+        thumbWrap.dataset.page = p;
+        const canvasSmall = await renderPageToCanvas(p,0.35);
+        thumbWrap.appendChild(canvasSmall);
+        thumbWrap.addEventListener('click', ()=> goToPage(p));
+        thumbs.appendChild(thumbWrap);
+      }
+
+      // set widths and show
+      requestAnimationFrame(()=>{
+        slideWidth = slides.querySelector('.slide').getBoundingClientRect().width + 12; // gap
+        updateSlidePosition();
+        updateActiveThumb();
+      });
+
+      // enable swipe dragging
+      enableDragToScroll();
+    }
+
+    function updateSlidePosition(){
+      const x = -((currentPage-1) * slideWidth);
+      slides.style.transform = `translateX(${x}px)`;
+      pageInfo.textContent = `Página ${currentPage} / ${pdfDoc.numPages}`;
+      updateActiveThumb();
+    }
+
+    function goToPage(n){ if(!pdfDoc) return; currentPage = Math.max(1,Math.min(n,pdfDoc.numPages)); updateSlidePosition(); }
+
+    prevBtn.addEventListener('click', ()=>{ goToPage(currentPage-1); });
+    nextBtn.addEventListener('click', ()=>{ goToPage(currentPage+1); });
+
+    fileInput.addEventListener('change', e=>{ if(e.target.files && e.target.files[0]) loadPDFFromFile(e.target.files[0]); });
+    urlInput.addEventListener('keyup', e=>{ if(e.key === 'Enter' && urlInput.value.trim()) loadPDFFromUrl(urlInput.value.trim()); });
+
+    function updateActiveThumb(){
+      Array.from(thumbs.children).forEach(t=> t.classList.toggle('active', Number(t.dataset.page)===currentPage));
+    }
+
+    // Simple drag-to-scroll for thumbs and touch swipe for slides
+    function enableDragToScroll(){
+      // Thumbs scroll naturally with overflow:auto.
+      // Slides: allow touch swipe to change pages
+      let startX=0, startTransform=0, isDown=false;
+      slides.addEventListener('pointerdown', (e)=>{
+        isDown=true; slides.style.transition='none'; startX = e.clientX; startTransform = getTranslateX(slides);
+      });
+      window.addEventListener('pointermove', (e)=>{
+        if(!isDown) return; const dx = e.clientX - startX; slides.style.transform = `translateX(${startTransform + dx}px)`;
+      });
+      window.addEventListener('pointerup', (e)=>{
+        if(!isDown) return; isDown=false; slides.style.transition='transform .32s ease'; const dx = e.clientX - startX; if(Math.abs(dx) > 60){ if(dx < 0) goToPage(currentPage+1); else goToPage(currentPage-1); } else updateSlidePosition();
+      });
+    }
+
+    function getTranslateX(el){
+      const st = window.getComputedStyle(el).transform;
+      if(st && st !== 'none'){
+        const m = st.match(/matrix\((.+)\)/);
+        if(m){ const vals = m[1].split(','); return parseFloat(vals[4]); }
+      }
+      return 0;
+    }
+
+    // Small usability: support keyboard arrows
+    window.addEventListener('keydown', (e)=>{
+      if(!pdfDoc) return; if(e.key==='ArrowLeft') goToPage(currentPage-1); if(e.key==='ArrowRight') goToPage(currentPage+1);
+    });
+
+    // Helpful note: open local files via an HTTP server for full PDF.js worker support
+    setStatus('Pronto — escolha um arquivo PDF ou cole uma URL');
+  </script>
+</body>
+</html>
