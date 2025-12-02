@@ -1,0 +1,22 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Node (caso futuramente instale pacotes)
+node_modules/
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# VSCode
+.vscode/
+
+# Cache de builds (opcional)
+dist/
+build/
